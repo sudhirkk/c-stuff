@@ -1,7 +1,16 @@
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <pthread.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <pthread.h>
+
+#define MSG_COUNT  100
+#define FILEPATH "mmapped.bin"
+
 
 pthread_mutex_t count_mutex     = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  condition_var   = PTHREAD_COND_INITIALIZER;
@@ -13,14 +22,15 @@ typedef struct Message
 	long timestamp;
 } Message;
 
-Message *messages = NULL;
+#define FILESIZE (MSG_COUNT * sizeof(Message))
+
+Message *messageMap = NULL;
 
 void *produceMessages();
 void *consumeMessages();
 int  count = 0;
 int start = 0; 
 
-#define MSG_COUNT  10000
 
 
 /*
@@ -37,7 +47,39 @@ long getMicroTime()
 int main()
 {
    pthread_t producer, consumer;
-   messages = (Message *)malloc(sizeof(Message)*MSG_COUNT);
+   int fd;
+   int result;
+
+    fd = open(FILEPATH, O_RDWR | O_CREAT | O_TRUNC, (mode_t)0600);
+    if (fd == -1) {
+        perror("Error opening file for writing");
+        exit(EXIT_FAILURE);
+    }
+
+    result = lseek(fd, FILESIZE-1, SEEK_SET);
+    if (result == -1) {
+        close(fd);
+        perror("Error calling lseek() to 'stretch' the file");
+        exit(EXIT_FAILURE);
+    }
+
+    result = write(fd, "", 1);
+    if (result != 1) {
+        close(fd);
+        perror("Error writing last byte of the file");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Now the file is ready to be mmapped.
+     */
+    messageMap = mmap(0, FILESIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (messageMap == MAP_FAILED) {
+        close(fd);
+        perror("Error mmapping the file");
+        exit(EXIT_FAILURE);
+    }
+
+   //messages = (Message *)malloc(sizeof(Message)*MSG_COUNT);
 
    pthread_create( &producer, NULL, &produceMessages, NULL);
    pthread_create( &consumer, NULL, &consumeMessages, NULL);
@@ -45,7 +87,15 @@ int main()
    pthread_join( producer, NULL);
    pthread_join( consumer, NULL);
 
-   exit(EXIT_SUCCESS);
+    if (munmap(messageMap, FILESIZE) == -1) {
+        perror("Error un-mmapping the file");
+        /* Decide here whether to close(fd) and exit() or not. Depends... */
+    }
+
+    /* Un-mmaping doesn't close the file, so we still need to do that.
+     */
+    close(fd);
+   return(EXIT_SUCCESS);
 }
 
 // Write numbers 1-3 and 8-10 as permitted by functionCount2()
@@ -68,7 +118,7 @@ void *consumeMessages()
       // Wait while functionCount2() operates on count
       // mutex unlocked if condition varialbe in functionCount2() signaled.
       pthread_cond_wait( &condition_var, &count_mutex );
-      Message msg = messages[count];
+      Message msg = messageMap[count];
       long ts = getMicroTime();
 
       printf("Received message: %ld (%ld)\n", msg.msgid, ts - msg.timestamp);
@@ -89,7 +139,7 @@ void *produceMessages()
       count++;
       msg->msgid = count;
       msg->timestamp = getMicroTime();
-      messages[count] = *msg;
+      messageMap[count] = *msg;
       pthread_cond_signal( &condition_var );
       printf("Sent message: %ld\n", msg->msgid);
 
