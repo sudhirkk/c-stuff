@@ -2,8 +2,17 @@
 #include <stdlib.h> 
 #include <limits.h> 
 #include <time.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
 
 #define BILLION 1000000000L
+
+pthread_mutex_t mutex     = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  condition = PTHREAD_COND_INITIALIZER;
 
 typedef struct Message
 {
@@ -16,10 +25,26 @@ struct Queue
 { 
 	int front, rear, size; 
 	unsigned capacity; 
-	struct Message* array; 
+	Message* array; 
 }; 
 
 Message *empty = NULL;
+
+void createMmapFiles()
+{
+	int arraySize = sizeof(Message) * 10000;
+	int queueSize = 8;
+	FILE *fp = fopen("messages.data", "w");
+	fseek(fp, arraySize, SEEK_SET);
+	fputc('\0', fp);
+	fclose(fp);
+
+	fp = fopen("queue.data", "w");
+	fseek(fp, queueSize, SEEK_SET);
+	fputc('\0', fp);
+	fclose(fp);
+
+}
 
 /*
  * Get an artitrary time in microseconds accuracy
@@ -42,6 +67,19 @@ struct Queue* createQueue(unsigned capacity)
 	queue->front = queue->size = 0; 
 	queue->rear = capacity - 1; // This is important, see the enqueue 
 	queue->array = (Message*) malloc(queue->capacity * sizeof(Message)); 
+	//Message *msgs  = (Message*) malloc(queue->capacity * sizeof(Message)); 
+	printf("Q0 %d\n", queue->rear);
+
+	int size = queue->capacity * sizeof(Message);
+	int fd = open("messages.data", O_RDWR | O_CREAT | O_TRUNC, 0600);
+
+  	Message *addr = (Message *)mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  	printf("Mapped at %p\n", addr);
+
+  	if (addr == (void*) -1 ) exit(-1);
+
+	addr = queue->array;
+	//queue->array = addr;
 	return queue; 
 } 
 
@@ -61,8 +99,11 @@ void enqueue(struct Queue* queue, Message msg)
 { 
 	if (isFull(queue)) 
 		return; 
+	printf("Q1 %d %d\n", queue->rear, queue->capacity);
 	queue->rear = (queue->rear + 1)%queue->capacity; 
+	printf("Q2 %d\n", queue->rear);
 	queue->array[queue->rear] = msg; 
+	printf("Q3\n");
 	queue->size = queue->size + 1; 
 	printf("%ld enqueued to queue\n", msg.msgid); 
 } 
@@ -116,12 +157,17 @@ Message rear(struct Queue* queue)
 int main() 
 { 
 
-	struct Queue* queue = createQueue(1000); 
+	createMmapFiles();
+	struct Queue* queue = createQueue(100); 
 	for (int i=0; i<10; i++)
 	{
+		printf("1\n");
 		Message *message = (Message *) malloc(sizeof(Message));
+		printf("2\n");
 		message->msgid = i+1;
+		printf("3\n");
 		enqueue(queue, *message);
+		printf("4\n");
 	}
 
 	printf("Front item is %ld\n", front(queue).msgid); 
@@ -138,7 +184,7 @@ int main()
 	//sleep(1);
 	//long ts1 = getMicroTime();
 	//printf("Time: %ld\n", ts1-ts);
-	//printf("Size of queue: %ld, size of Message: %ld\n", sizeof(queue), sizeof(struct Message));
+	printf("Size of queue: %ld, size of Message: %ld\n", sizeof(queue), sizeof(struct Message));
 
 	return 0; 
 } 
